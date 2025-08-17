@@ -247,3 +247,92 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Order API server listening on port ${PORT}`);
 });
+
+/*
+ * In addition to the webhook handler defined above, we also set up a simple
+ * long‑polling loop to process callback queries.  This provides a
+ * fallback mechanism when a webhook is not configured or reachable.
+ * Telegram will accumulate updates on its servers, and our bot can
+ * periodically fetch them using getUpdates.  We only request
+ * callback_query updates to minimize traffic.  When a callback query
+ * arrives, we invoke the same logic as the webhook handler to
+ * process accept/reject actions.  This ensures that the “Принять” and
+ * “Отклонить” buttons work even if the user hasn’t set up a webhook.
+ */
+if (BOT_TOKEN && DONATE_CHAT_ID) {
+  let lastUpdateId = 0;
+  // Helper function to process a callback query and perform the
+  // appropriate action.
+  const processCallbackQuery = async (callbackQuery) => {
+    const data = callbackQuery.data;
+    // Function to answer the callback to remove the loading indicator.
+    const answerCallback = async () => {
+      try {
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ callback_query_id: callbackQuery.id })
+        });
+      } catch (e) {
+        console.error('Failed to answer callback query (poll):', e);
+      }
+    };
+    if (data === 'reject') {
+      // Delete the originating message
+      try {
+        const chatId = callbackQuery.message.chat.id;
+        const messageId = callbackQuery.message.message_id;
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage?chat_id=${chatId}&message_id=${messageId}`);
+      } catch (e) {
+        console.error('Failed to delete message on reject (poll):', e);
+      } finally {
+        await answerCallback();
+        return;
+      }
+    } else if (typeof data === 'string' && data.startsWith('accept|')) {
+      const parts = data.split('|');
+      if (parts.length >= 4) {
+        const [, type, usernamePart, amount] = parts;
+        const atUsername = usernamePart.startsWith('@') ? usernamePart : `@${usernamePart}`;
+        const donateMsg = `/donate ${type} ${atUsername} ${amount}`;
+        try {
+          await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: DONATE_CHAT_ID, text: donateMsg })
+          });
+        } catch (e) {
+          console.error('Failed to forward donation command (poll):', e);
+        }
+      }
+      await answerCallback();
+      return;
+    }
+  };
+  // Polling loop
+  const pollUpdates = async () => {
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&allowed_updates=[\"callback_query\"]`);
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.result)) {
+        for (const update of data.result) {
+          if (update.update_id) {
+            if (update.update_id > lastUpdateId) {
+              lastUpdateId = update.update_id;
+            }
+          }
+          if (update.callback_query) {
+            await processCallbackQuery(update.callback_query);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error polling Telegram updates:', err);
+    } finally {
+      // Schedule the next poll after a short delay.
+      setTimeout(pollUpdates, 3000);
+    }
+  };
+  // Start polling
+  pollUpdates();
+}
