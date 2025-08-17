@@ -21,7 +21,7 @@ const CHAT_ID   = '-1002703949173';
 // Chat ID of the group/channel where donation commands should be sent.  This
 // should be a different group from CHAT_ID.  Replace with the actual chat
 // identifier of your donation group.
-const DONATE_CHAT_ID = '-1002703949173';
+const DONATE_CHAT_ID = '-1003039867044';
 
 const app = express();
 const upload = multer();
